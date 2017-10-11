@@ -1,0 +1,125 @@
+---
+title: "ID Analytics -- Sheng Ming"
+output: pdf_document
+---
+
+Since the high level concept of this exercise is to picture this data set as a structured table, The approach I used is to directly parse the json lines into a structured data table and then do all manipulations based on the table.
+
+Here I used the data.table package. Data.table is an inheritance from data.frame, but it's much faster than data.frame for 2 reasons:
+
+1. It is implemented in C.
+2. It creates a copy of column pointers instead of an entire physical copy of data in the memory.
+
+```{r, message=FALSE, warning=FALSE}
+# setwd('/Users/riyueyoutu/Desktop/idanalytics/')
+library(jsonlite)
+library(data.table)
+```
+
+I read in the json lines and parsed each line as an element in a list.
+
+```{r, message=FALSE, warning=FALSE}
+lines = readLines('ida_wrangling_exercise_data.2017-02-13.jsonl')
+lst = lapply(lines,fromJSON)
+```
+
+I wrote a function which flattened all the nested structures using unlist() and made it as data table to improve the efficiency in the following rbind process. Set fill=T to fill NA in the missing field. So the full structured table is generated. 
+
+```{r, message=FALSE, warning=FALSE}
+to_dt = function(x) as.data.table(t(unlist(x)))
+dt = rbindlist(lapply(lst,to_dt),fill=T)
+# a quick view of the generated table
+head(dt,10)
+```
+
+##Q1.
+
+Since I have generated the flattened structured table. I directly sorted the column names in alphabetical order (I left it as a vector for more compact display in R).
+
+```{r, message=FALSE, warning=FALSE}
+sort(colnames(dt))
+```
+
+##Q2.
+
+For the first question, it is just to divide the total number of non-NA values by the total number of records of each column.
+
+```{r, message=FALSE, warning=FALSE}
+perc = function(col) round(sum(!is.na(col))*100/dim(dt)[1],1)
+apply(dt,2,perc)
+```
+
+For the second question, I utilized the efficient operations in data.table. I first created a new column to derive the total counts grouped by each field, then sorted each field count to get the top5 fields and concatenated all the results to one table to display.
+
+```{r, message=FALSE, warning=FALSE}
+top5 = function(col) {
+  return (dt[!is.na(get(col)),.(count=.N),by=col][order(count,decreasing=T)[1:5],])
+}
+
+## do.call is a little faster than a for-loop to concatenate all the columns
+do.call(cbind,lapply(colnames(dt),top5))
+```
+
+##Q3
+
+Questions 3 asks for distinct first names. As for the parsed data table, since for some rows first names appear in the full name column, to get all the first names, we need to capture all the first names in the full name field. After a quick scan, I found for most full names, the first part before space is the first name, however, some of the full names begin with 'Dr.', 'Mr.', 'Mrs.' or 'Ms.'. I wrote a regex pattern to capture first names from the two situations. The logic is if the full name begins with the four titles, it will fall into the first pattern before "|" operator, otherwise it falls into the normal case. the argument "\\\\2\\\\3" in gsub means to backreference the second and third parenthesized subexpressions. Notice that because the regular expression is provided as a string to gsub, we have to use double escapes like "\\\\." instead of "\\." to make the regex parsed correctly.
+
+```{r, message=FALSE, warning=FALSE, results="hide"}
+fname = "^(Dr\\.|Mr\\.|Mrs\\.|Ms\\.)\\s+(.*?)\\s+.*|^(.*?)\\s+.*"
+dt[is.na(name.firstname),name.firstname:=gsub(fname,"\\2\\3",name,ignore.case=T)]
+```
+
+The length of the unique value vector of the field should be the number of distinct occurrences.
+
+```{r, message=FALSE, warning=FALSE}
+length(unique(dt[!is.na(name.firstname),name.firstname]))
+```
+
+##Q4
+
+Questions 4 asks for distinct street names. For the same sake of distinct first names, I first parsed out street names from records with full addresses but missed the address.street values. I skimmed through the records and found all characters before the newline character '\\n' are the street name. So I assigned these characters to the missing address.street columns for the corresponding records.
+
+```{r, message=FALSE, warning=FALSE, results="hide"}
+dt[is.na(address.street),address.street:=gsub("(.*)\\n.*","\\1",address,ignore.case=T)]
+```
+
+The length of the unique value vector of the field should be the number of distinct occurrences.
+
+```{r, message=FALSE, warning=FALSE}
+l = length(unique(dt[!is.na(address.street),address.street]))
+l
+
+sum(!is.na(dt$address.street)) - l
+## 1176 duplicates found!
+```
+
+Recall that in question 2, when I haven't assigned street names from full addresses, there were no duplicates for street names. But now we have 1176 duplicated street names. I decided to take a look to the duplicated values.
+
+```{r, message=FALSE, warning=FALSE}
+dt[!is.na(address.street),.(count=.N),by=address.street][order(count,decreasing=T)[1:10],]
+```
+
+There is something interesting here. We saw a lot of Navy ships. The reason why they were classified as street names was because I regarded all characters appeared before '\\n' in the address field as street names. It is definitely not the case though. I would like to investigate deeper why so many people in service for Navy would be included in this data source if I had more information about it. 
+
+##Q5
+
+For question 5, again it requires a regex to capture all the area codes pattern lying in the phone field. After a quick scan over the phone field, I found there are mainly 4 patterns:
+
+1. "(441)455-7960x11786" -- *area code 441*
+2. "+04(4)5639256486"    -- *area code 563*
+3. "1-369-946-8671x106"  -- *area code 369*
+4. "405.100.4038"        -- *area code 405*
+
+Therefore I customized three regex to capture the four patterns and get the corresponding area codes. I made a quick check using table() and checked whether each phone number assigned an area.code successfully. The result is good. Then I used the function top5() created for question 2 to get the top 5 most common US area codes.  
+
+```{r, message=FALSE, warning=FALSE}
+AreaCode = ".*\\((\\d{3})\\).*|.*(\\d{3})\\d{7}\\b.*|.*(\\d{3})[-.]\\d{3}[-.]\\d{4}.*"
+dt$us.area.code = sub(AreaCode,"\\1\\2\\3",dt$phone)
+
+## quick check
+# table(dt$us.area.code)
+# whether the total number of non-NA values in us.area.code matches that of phone
+sum(!is.na(dt$phone)) == sum(!is.na(dt$us.area.code))
+
+top5("us.area.code")
+```
